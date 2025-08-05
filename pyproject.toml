@@ -9,3 +9,19 @@ dependencies = [
     "psutil>=7.0.0",
     "tortoise-orm>=0.25.1",
 ]
+
+[tool.ruff]
+line-length = 88
+indent-width = 2
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E","F","W","I","UP","B","SIM","PL","RUF"]
+ignore = []
+
+[tool.ruff.format]
+indent-style = "space"
+quote-style = "double"
+line-ending = "auto"
+docstring-code-format = true
+skip-magic-trailing-comma = false

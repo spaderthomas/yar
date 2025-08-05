@@ -11,10 +11,18 @@ import random
 import string
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Dict
+import time
 
 from tortoise.models import Model
 from tortoise import fields, Tortoise
+
+
+@dataclass
+class BandwidthManager:
+    bytes_available: float
+    bytes_max: int = 10240  # 10KB burst capacity
+    refill_rate: int = 0  # bytes per second, set from player.bandwidth
 
 
 class Paths:
@@ -34,11 +42,17 @@ class GamePaths:
         self.targets = os.path.join(self.game, "targets")
 
 
+class EventSource(str, Enum):
+    TICK = "Tick"
+    BANDWIDTH_EXCEEDED = "BandwidthExceeded"
+
+
 class Config(Model):
     id = fields.IntField(primary_key=True)
     factory_threshold = fields.IntField(default=100)
     player_bandwidth = fields.IntField(default=10)
     player_compute = fields.IntField(default=5)
+    bandwidth_penalty = fields.IntField(default=1)
 
 
 class Game(Model):
@@ -75,6 +89,17 @@ class Player(Model):
     prompt_path = fields.CharField(max_length=255)
     bandwidth = fields.IntField()
     compute = fields.IntField()
+    score = fields.IntField(default=0)
+
+
+class Event(Model):
+    id = fields.IntField(primary_key=True)
+    game = fields.ForeignKeyField("models.Game", related_name="events")
+    player = fields.ForeignKeyField("models.Player", related_name="events", null=True)
+    source = fields.CharEnumField(EventSource)
+    delta = fields.IntField()
+    new_score = fields.IntField()
+    created_at = fields.DatetimeField(auto_now_add=True)
 
 
 class Yar:
@@ -185,11 +210,27 @@ class Yar:
     def get_player_offset(self, player_id: int):
         return 1 if player_id == 1 else -1
 
+    def is_player_byte(self, player, byte_val: int) -> bool:
+        # Player sends their ID as a byte (1 or 2)
+        return byte_val == player.player_id
+
     async def run_socket_server(self, game_id: int, game_dir: str, debug: bool = False):
         game = await Game.get(id=game_id)
+        config = await Config.first()
         factories = await Factory.filter(game=game_id).all()
         targets = await Target.filter(game=game_id).all()
         players = await Player.filter(game=game_id).all()
+        
+        # Create player lookup and bandwidth managers
+        player_by_id = {p.player_id: p for p in players}
+        bandwidth_managers: Dict[int, BandwidthManager] = {}
+        for p in players:
+            bandwidth_managers[p.player_id] = BandwidthManager(
+                bytes_available=10240,  # Start with full burst capacity
+                bytes_max=10240,  # 10KB burst capacity
+                refill_rate=p.bandwidth * 1024,  # KB/s to bytes/s
+            )
+        
         factory_by_sock = {}
         target_cycle = list(targets)
         sockets = []
@@ -208,42 +249,98 @@ class Yar:
         if debug:
             print("Game loop running at 10Hz (Ctrl+C to stop)")
 
+        last_time = time.time()
+        last_tick_time = time.time()
+        
         try:
             tick_interval = 0.1
             while True:
+                current_time = time.time()
+                dt = current_time - last_time
+                last_time = current_time
+                
+                # Refill bandwidth managers
+                for pid, bw_mgr in bandwidth_managers.items():
+                    bw_mgr.bytes_available = min(
+                        bw_mgr.bytes_max,
+                        bw_mgr.bytes_available + bw_mgr.refill_rate * dt
+                    )
+                
+                # Check for 1-second tick
+                if current_time - last_tick_time >= 1.0:
+                    # Calculate total target scores
+                    total_score = sum(t.score for t in targets)
+                    
+                    # Update player scores based on target totals
+                    for player in players:
+                        delta = total_score * self.get_player_offset(player.player_id)
+                        
+                        if delta != 0:
+                            player.score += delta
+                            await player.save(update_fields=["score"])
+                            await Event.create(
+                                game=game,
+                                player=player,
+                                source=EventSource.TICK,
+                                delta=delta,
+                                new_score=player.score
+                            )
+                    
+                    last_tick_time = current_time
+                
                 readable, _, _ = select.select(sockets, [], [], tick_interval)
                 for sock in readable:
                     data, _ = sock.recvfrom(65536)
-                    ones = sum(1 for b in data if b == 1 or b == ord("1"))
-                    zeros = sum(1 for b in data if b == 0 or b == ord("0"))
                     _, factory, target = factory_by_sock[sock.fileno()]
+                    
                     if debug:
                         print(f"Received {len(data)} bytes on {factory.socket_path}")
-                    if ones:
-                        factory.p1_progress += ones
-                    if zeros:
-                        factory.p2_progress += zeros
+                    
+                    # Count bytes per player
+                    for player in players:
+                        count = sum(1 for b in data if self.is_player_byte(player, b))
+                        if count == 0:
+                            continue
+                        
+                        bw_mgr = bandwidth_managers[player.player_id]
+                        allowed = int(min(bw_mgr.bytes_available, count))
+                        bw_mgr.bytes_available -= allowed
+                        excess = count - allowed
+                        
+                        # Add allowed bytes to progress
+                        if player.player_id == 1:
+                            factory.p1_progress += allowed
+                        else:
+                            factory.p2_progress += allowed
+                        
+                        # Apply penalty for excess
+                        if excess > 0:
+                            penalty = -config.bandwidth_penalty * excess
+                            player.score += penalty
+                            await player.save(update_fields=["score"])
+                            await Event.create(
+                                game=game,
+                                player=player,
+                                source=EventSource.BANDWIDTH_EXCEEDED,
+                                delta=penalty,
+                                new_score=player.score
+                            )
+                            if debug:
+                                print(f"Player {player.player_id} exceeded bandwidth: {excess} excess bytes, penalty: {penalty}")
+                    
+                    # Process factory thresholds
+                    assert target is not None
                     while factory.p1_progress >= factory.threshold:
                         factory.p1_progress -= factory.threshold
-                        if target:
-                            target.score += self.get_player_offset(1)
+                        target.score += self.get_player_offset(1)
                     while factory.p2_progress >= factory.threshold:
                         factory.p2_progress -= factory.threshold
-                        if target:
-                            target.score += self.get_player_offset(2)
-                    if target:
-                        try:
-                            with open(target.file_path, "r") as f:
-                                cur = int((f.read() or "0").strip() or "0")
-                        except FileNotFoundError:
-                            cur = 0
-                        new_val = (
-                            cur
-                            + (ones > 0) * self.get_player_offset(1)
-                            + (zeros > 0) * self.get_player_offset(2)
-                        )
-                        with open(target.file_path, "w") as f:
-                            f.write(str(new_val))
+                        target.score += self.get_player_offset(2)
+                    
+                    # Write target score to file
+                    with open(target.file_path, "w") as f:
+                        f.write(str(target.score))
+                
                 await asyncio.gather(
                     *[
                         factory.save(update_fields=["p1_progress", "p2_progress"])

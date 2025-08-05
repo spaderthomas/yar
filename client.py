@@ -38,7 +38,8 @@ async def async_main(game: int | None, player: str, bandwidth: int, debug: bool)
         click.echo("No factories found")
         return
 
-    byte_val = b"1" if player == "1" else b"0"
+    # Player sends their ID as a byte
+    byte_val = bytes([int(player)])
     socks: list[socket.socket] = []
     try:
         for f in factories:
