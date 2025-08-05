@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  yar:
+    build: .
+    image: yarm:latest
+    container_name: yarm
+    volumes:
+      - .:/yar
+      - ~/.local/share/opencode/auth.json:/root/.local/share/opencode/auth.json
+    working_dir: /arena
+    stdin_open: true
+    tty: true
+    command: /bin/bash -c "while true; do sleep 30; done"

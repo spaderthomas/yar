@@ -1,0 +1,11 @@
+[project]
+name = "yar"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.2.1",
+    "psutil>=7.0.0",
+    "tortoise-orm>=0.25.1",
+]
