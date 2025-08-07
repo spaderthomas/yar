@@ -7,8 +7,15 @@ requires-python = ">=3.10"
 dependencies = [
     "click>=8.2.1",
     "psutil>=7.0.0",
+    "textual>=5.2.0",
     "tortoise-orm>=0.25.1",
 ]
+
+[project.scripts]
+yar = "yar.yar:main"
+
+[tool.setuptools]
+packages = ["yar"]
 
 [tool.ruff]
 line-length = 88
@@ -25,3 +32,15 @@ quote-style = "double"
 line-ending = "auto"
 docstring-code-format = true
 skip-magic-trailing-comma = false
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1",
+    "pytest-asyncio>=1.1.0",
+    "textual-dev>=1.7.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["yar/test"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"

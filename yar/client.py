@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 
 import asyncio
-import os
 import socket
-import time
+
 import click
 from tortoise import Tortoise
-from yar import Factory, Game
+
+from .models import Game, Socket, GamePaths
 
 
 async def get_latest_game_id():
@@ -22,31 +22,32 @@ async def resolve_game_id(game_id: int | None):
 
 async def init_db():
     await Tortoise.init(
-        db_url="sqlite:///yar/games/yar.sqlite3", modules={"models": ["yar"]}
+        db_url="sqlite:///yar/games/yar.sqlite3", modules={"models": ["yar.models"]}
     )
 
 
-async def async_main(game: int | None, player: str, bandwidth: int, debug: bool):
+async def run_client(game: int | None, player: str, bandwidth: int, debug: bool):
     await init_db()
     gid = await resolve_game_id(game)
     if gid is None:
         click.echo("No games found")
         return
 
-    factories = await Factory.filter(game_id=gid).all()
+    factories = await Socket.filter(game_id=gid).all()
     if not factories:
-        click.echo("No factories found")
+        click.echo("No sockets found")
         return
 
-    # Player sends their ID as a byte
     byte_val = bytes([int(player)])
     socks: list[socket.socket] = []
+    game_paths = GamePaths(gid)
     try:
-        for f in factories:
+        for idx, f in enumerate(factories):
             s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-            s.connect(f.socket_path)
+            socket_path = f"{game_paths.sockets}/yar-{idx+1:03d}"
+            s.connect(socket_path)
             if debug:
-                click.echo(f"Connected to socket {f.socket_path}")
+                click.echo(f"Connected to socket {socket_path}")
             socks.append(s)
 
         interval = 1.0 / max(1, bandwidth)
@@ -62,28 +63,3 @@ async def async_main(game: int | None, player: str, bandwidth: int, debug: bool)
         for s in socks:
             s.close()
         await Tortoise.close_connections()
-
-
-@click.command()
-@click.option("--game", type=int, help="Game ID (defaults to latest)")
-@click.option(
-    "--player",
-    type=click.Choice(["1", "2"]),
-    default="1",
-    show_default=True,
-    help="Player ID (1 or 2)",
-)
-@click.option(
-    "--bandwidth",
-    type=int,
-    default=64,
-    show_default=True,
-    help="Bytes per second to send",
-)
-@click.option("--debug", is_flag=True, default=False, help="Enable debug logs")
-def main(game: int | None, player: str, bandwidth: int, debug: bool):
-    asyncio.run(async_main(game, player, bandwidth, debug))
-
-
-if __name__ == "__main__":
-    main()

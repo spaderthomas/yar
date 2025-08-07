@@ -3,6 +3,7 @@
 .python_version
 .spackle
 __pycache__
-asset
+yar.egg-info
 games
-CLAUDE.md
+external
+claude.md

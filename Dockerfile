@@ -1,17 +1,18 @@
 FROM ubuntu:latest
 
 RUN apt update && apt install -y \
-    python3 \
-    make \
-    git \
-    stow \
-    neovim \
     bash \
     curl \
-    unzip \
+    fzf \
+    git \
+    make \
+    neovim \
     nodejs \
     npm \
-    sqlite3
+    python3 \
+    sqlite3 \
+    stow \
+    unzip
 
 RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli opencode-ai@latest
 
