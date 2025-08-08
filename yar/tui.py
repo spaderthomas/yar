@@ -12,6 +12,13 @@ from tortoise import Tortoise
 
 from .models import Paths, GamePaths, Event, Game, Player, EventSource
 
+class Labels:
+    def __init__(self, pid: int):
+        self.main = f'player{pid}'
+        self.score = f'p{pid}-score'
+        self.bandwidth = f'p{pid}-bandwidth-label'
+        self.bandwidth_bar = f'p{pid}-bandwidth-bar'
+        self.bandwidth_max = f'p{pid}-max-bandwidth'
 
 class PlayerOverview(Widget):
     """Widget to display player overview with score and bandwidth"""
@@ -71,28 +78,29 @@ class PlayerOverview(Widget):
         self.score: int = 0
         self.bandwidth_usage: float = 0.0
         self.max_bandwidth: int = 10
-        self.add_class(f"player{player_id}")
+        self.labels = Labels(player_id)
+        self.add_class(self.labels.main)
         
     def compose(self) -> ComposeResult:
         yield Label(f"Player {self.player_id}", classes="player-title")
-        yield Label(f"Score: 0", id=f"p{self.player_id}-score", classes="score-label")
-        yield Label(f"Bandwidth: 0.0 KB/s", id=f"p{self.player_id}-bandwidth-label", classes="bandwidth-label")
-        yield ProgressBar(total=100, show_eta=False, id=f"p{self.player_id}-bandwidth-bar")
-        yield Label(f"Max: {self.max_bandwidth} KB/s", id=f"p{self.player_id}-max-bandwidth", classes="bandwidth-label")
+        yield Label(f"Score: 0", id=self.labels.score, classes="score-label")
+        yield Label(f"Bandwidth: 0.0 KB/s", id=self.labels.bandwidth, classes="bandwidth-label")
+        yield ProgressBar(total=100, show_eta=False, id=self.labels.bandwidth_bar)
+        yield Label(f"Max: {self.max_bandwidth} KB/s", id=self.labels.bandwidth_max, classes="bandwidth-label")
         
     def update_player_data(self, score: int, bandwidth_usage: float, max_bandwidth: int) -> None:
         self.score = score
         self.bandwidth_usage = bandwidth_usage
         self.max_bandwidth = max_bandwidth
         
-        score_label = self.query_one(f"#p{self.player_id}-score", Label)
+        score_label = self.query_one(self.labels.score, Label)
         score_label.update(f"Score: {score}")
         
-        bandwidth_label = self.query_one(f"#p{self.player_id}-bandwidth-label", Label)
+        bandwidth_label = self.query_one(self.labels.bandwidth, Label)
         bandwidth_kb = bandwidth_usage / 1024
         bandwidth_label.update(f"Bandwidth: {bandwidth_kb:.1f} KB/s")
         
-        bandwidth_bar = self.query_one(f"#p{self.player_id}-bandwidth-bar", ProgressBar)
+        bandwidth_bar = self.query_one(self.labels.bandwidth_bar, ProgressBar)
         bandwidth_bar.total = max_bandwidth * 1024  # Convert KB to bytes
         bandwidth_bar.progress = bandwidth_usage
         
@@ -104,7 +112,7 @@ class PlayerOverview(Widget):
         else:
             bandwidth_bar.styles.bar_color = "green"
             
-        max_label = self.query_one(f"#p{self.player_id}-max-bandwidth", Label)
+        max_label = self.query_one(self.labels.max_bandwidth, Label)
         max_label.update(f"Max: {max_bandwidth} KB/s")
 
 
@@ -201,7 +209,7 @@ class PlayerEventTable(Widget):
         
         # Check if this event already exists in the table (by key)
         event_key = str(event.id)
-        if event_key in [str(row.key) for row in table.rows]:
+        if event_key in [str(row) for row in table.rows]:
             return  # Skip duplicate events
         
         table.add_row(
@@ -309,6 +317,7 @@ class YarTUI(App):
         self.set_interval(0.1, self.update_game_state)
         
     async def update_game_state(self) -> None:
+        self.console.print('foobar!')
         if not self.db_initialized or not self.game_id:
             return
             
@@ -349,7 +358,7 @@ class YarTUI(App):
     async def init_db(self) -> None:
         paths: Paths = Paths()
         await Tortoise.init(
-            db_url=paths.db_file + "?mode=ro", 
+            db_url=f"sqlite://{paths.db_file}?mode=ro", 
             modules={"models": ["yar.models"]}
         )
         self.db_initialized = True
