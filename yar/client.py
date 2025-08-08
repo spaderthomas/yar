@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import asyncio
-import socket
+import socket as psocket
 
 import click
 from tortoise import Tortoise
@@ -33,29 +33,42 @@ async def run_client(game: int | None, player: str, bandwidth: int, debug: bool)
         click.echo("No games found")
         return
 
-    factories = await Socket.filter(game_id=gid).all()
-    if not factories:
+    sockets = await Socket.filter(game_id=gid).all()
+    if not sockets:
         click.echo("No sockets found")
         return
 
     byte_val = bytes([int(player)])
-    socks: list[socket.socket] = []
+    socks: list[psocket.socket] = []
     game_paths = GamePaths(gid)
+    
+    click.echo(f"Starting client for Game {gid}, Player {player}")
+    click.echo(f"Bandwidth: {bandwidth} bytes/second")
+    click.echo(f"Found {len(sockets)} socket(s)")
+    
     try:
-        for idx, f in enumerate(factories):
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-            socket_path = f"{game_paths.sockets}/yar-{idx+1:03d}"
+        for idx in range(1, len(sockets) + 1):
+            s = psocket.socket(psocket.AF_UNIX, psocket.SOCK_DGRAM)
+            socket_path = f"{game_paths.sockets}/yar-{idx:03d}"
             s.connect(socket_path)
             if debug:
                 click.echo(f"Connected to socket {socket_path}")
             socks.append(s)
 
-        interval = 1.0 / max(1, bandwidth)
+        # Calculate how to distribute bandwidth across all sockets
+        num_sockets = len(socks)
+        sends_per_second = min(100, bandwidth / num_sockets)
+        bytes_per_send = max(1, bandwidth // (sends_per_second * num_sockets))
+        interval = 1.0 / max(1, sends_per_second)
+        
+        data_to_send = byte_val * bytes_per_send
+        
         while True:
             for s in socks:
-                s.send(byte_val)
+                s.send(data_to_send)
             if debug:
-                click.echo(f"Sent {byte_val!r} to {len(socks)} sockets")
+                total_bytes = bytes_per_send * len(socks)
+                click.echo(f"Sent {bytes_per_send} bytes to {len(socks)} sockets ({total_bytes} bytes total)")
             await asyncio.sleep(interval)
     except KeyboardInterrupt:
         pass

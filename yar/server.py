@@ -20,7 +20,6 @@ from .models import (
     GamePaths,
     Paths,
     Player,
-    Score,
     Socket,
 )
 
@@ -53,10 +52,10 @@ class YarServer:
         if len(opencode_pids) >= 2:
             self.player_pids = opencode_pids[:2]
 
-    async def setup_game(self):
+    async def setup_game(self, num_sockets: int = 1):
         config = await Config.first()
         game = await Game().create()
-        print(f"Created game with ID: {game.id}")
+        print(f"Created game with ID: {game.id}", flush=True)
 
         game_paths = GamePaths(game.id)
 
@@ -65,15 +64,7 @@ class YarServer:
         os.makedirs(game_paths.sockets, exist_ok=True)
         os.makedirs(game_paths.scores, exist_ok=True)
 
-        for i in range(1, 5):
-            target_path = os.path.join(game_paths.scores, f"score-{i:03d}")
-            with open(target_path, "w") as f:
-                f.write("0")
-
-            score = Score(game_id=game.id, file_path=target_path, score=0)
-            await score.save()
-
-        for i in range(1, 5):
+        for i in range(1, num_sockets + 1):
             socket_path = os.path.join(game_paths.sockets, f"yar-{i:03d}")
             await Socket.create(
                 game=game,
@@ -117,9 +108,6 @@ class YarServer:
 
         return game.id, game_paths.game
 
-    def get_player_offset(self, player_id: int):
-        return 1 if player_id == 1 else -1
-
     def is_player_byte(self, player, byte_val: int) -> bool:
         return byte_val == player.player_id
 
@@ -127,17 +115,15 @@ class YarServer:
         game = await Game.get(id=game_id)
         config = await Config.first()
         sockets = await Socket.filter(game=game_id).all()
-        scores = await Score.filter(game=game_id).all()
         players = await Player.filter(game=game_id).all()
 
-        # Clean up any existing socket files
         game_paths = GamePaths(game_id)
-        for idx in range(1, 5):
+        for idx in range(1, len(sockets) + 1):
             socket_path = os.path.join(game_paths.sockets, f"yar-{idx:03d}")
             if os.path.exists(socket_path):
                 os.unlink(socket_path)
                 if debug:
-                    print(f"Removed existing socket: {socket_path}")
+                    print(f"Removed existing socket: {socket_path}", flush=True)
 
         player_by_id = {p.player_id: p for p in players}
         bandwidth_managers: Dict[int, BandwidthManager] = {}
@@ -149,26 +135,22 @@ class YarServer:
             )
 
         socket_infos = {}
-        target_cycle = list(scores)
         socket_files = []
         for idx, socket in enumerate(sockets):
             socket_file = psocket.socket(psocket.AF_UNIX, psocket.SOCK_DGRAM)
             socket_path = os.path.join(game_paths.sockets, f"yar-{idx+1:03d}")
             socket_file.bind(socket_path)
             socket_files.append(socket_file)
-            socket_infos[socket_file.fileno()] = (
-                socket_file,
-                socket,
-                target_cycle[idx % len(target_cycle)] if target_cycle else None,
-            )
+            socket_infos[socket_file.fileno()] = (socket_file, socket)
             if debug:
-                print(f"Created socket: {socket_path}")
+                print(f"Created socket: {socket_path}", flush=True)
 
         if debug:
-            print("Game loop running at 10Hz (Ctrl+C to stop)")
+            print("Game loop running at 10Hz (Ctrl+C to stop)", flush=True)
 
         last_time = time.time()
-        last_tick_time = time.time()
+        bandwidth_usage = {p.player_id: 0.0 for p in players}
+        bandwidth_window_start = time.time()
 
         try:
             tick_interval = 0.1
@@ -177,41 +159,28 @@ class YarServer:
                 dt = current_time - last_time
                 last_time = current_time
 
+                # Reset bandwidth usage tracking every second
+                if current_time - bandwidth_window_start >= 1.0:
+                    for player in players:
+                        player.current_bandwidth = bandwidth_usage[player.player_id]
+                        await player.save(update_fields=["current_bandwidth"])
+                    bandwidth_usage = {p.player_id: 0.0 for p in players}
+                    bandwidth_window_start = current_time
+
                 for pid, manager in bandwidth_managers.items():
                     manager.bytes_available = min(
                         manager.bytes_max,
                         manager.bytes_available + manager.refill_rate * dt,
                     )
 
-                if current_time - last_tick_time >= 1.0:
-                    total_score = sum(s.score for s in scores)
-
-                    p1_delta = max(total_score, 0)
-                    p2_delta = max(-total_score, 0)
-
-                    for player in players:
-                        delta = p1_delta if player.player_id == 1 else p2_delta
-                        if delta != 0:
-                            player.score += delta
-                            await player.save(update_fields=["score"])
-                            await Event.create(
-                                game=game,
-                                player=player,
-                                source=EventSource.TICK,
-                                delta=delta,
-                                new_score=player.score,
-                            )
-                    last_tick_time = current_time
-
                 readable, _, _ = select.select(socket_files, [], [], tick_interval)
                 for socket_file in readable:
                     data, _ = socket_file.recvfrom(65536)
-                    _, socket, score = socket_infos[socket_file.fileno()]
+                    _, socket = socket_infos[socket_file.fileno()]
 
                     if debug:
-                        print(
-                            f"Received {len(data)} bytes on socket"
-                        )
+                        print(f"Received {len(data)} bytes on socket", flush=True)
+                    
                     for player in players:
                         count = sum(1 for b in data if self.is_player_byte(player, b))
                         if count == 0:
@@ -221,6 +190,9 @@ class YarServer:
                         allowed = int(min(manager.bytes_available, count))
                         manager.bytes_available -= allowed
                         excess = count - allowed
+                        
+                        # Track bandwidth usage for this second
+                        bandwidth_usage[player.player_id] += allowed
 
                         if player.player_id == 1:
                             socket.p1_progress += allowed
@@ -240,31 +212,44 @@ class YarServer:
                             )
                             if debug:
                                 print(
-                                    f"Player {player.player_id} exceeded bandwidth: {excess} excess bytes, penalty: {penalty}"
+                                    f"Player {player.player_id} exceeded bandwidth: {excess} excess bytes, penalty: {penalty}",
+                                    flush=True
                                 )
 
-                    assert score is not None
-                    while socket.p1_progress >= socket.threshold:
-                        socket.p1_progress -= socket.threshold
-                        score.score += self.get_player_offset(1)
-                    while socket.p2_progress >= socket.threshold:
-                        socket.p2_progress -= socket.threshold
-                        score.score += self.get_player_offset(2)
+                        while socket.p1_progress >= socket.threshold and player.player_id == 1:
+                            socket.p1_progress -= socket.threshold
+                            points = 1
+                            player.score += points
+                            await player.save(update_fields=["score"])
+                            await Event.create(
+                                game=game,
+                                player=player,
+                                source=EventSource.TICK,
+                                delta=points,
+                                new_score=player.score,
+                            )
+                            if debug:
+                                print(f"Player 1 scored {points} point! Total: {player.score}", flush=True)
+                        
+                        while socket.p2_progress >= socket.threshold and player.player_id == 2:
+                            socket.p2_progress -= socket.threshold
+                            points = 1
+                            player.score += points
+                            await player.save(update_fields=["score"])
+                            await Event.create(
+                                game=game,
+                                player=player,
+                                source=EventSource.TICK,
+                                delta=points,
+                                new_score=player.score,
+                            )
+                            if debug:
+                                print(f"Player 2 scored {points} point! Total: {player.score}", flush=True)
 
-                    with open(score.file_path, "w") as f:
-                        f.write(str(score.score))
+                    await socket.save(update_fields=["p1_progress", "p2_progress"])
 
-                await asyncio.gather(
-                    *[
-                        socket.save(update_fields=["p1_progress", "p2_progress"])
-                        for _, socket, _ in socket_infos.values()
-                    ]
-                )
-                await asyncio.gather(
-                    *[s.save(update_fields=["score"]) for s in target_cycle if s is not None]
-                )
         except KeyboardInterrupt:
-            print("\nShutting down socket server...")
+            print("\nShutting down socket server...", flush=True)
         finally:
             for s in socket_files:
                 s.close()

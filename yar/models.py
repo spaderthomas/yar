@@ -51,17 +51,8 @@ class Game(Model):
     id = fields.IntField(primary_key=True)
     foo = fields.IntField(default=1000)
     created_at = fields.DatetimeField(auto_now_add=True)
-    scores: fields.ReverseRelation["Score"]
     sockets: fields.ReverseRelation["Socket"]
     players: fields.ReverseRelation["Player"]
-
-
-class Score(Model):
-    id = fields.IntField(primary_key=True)
-    game = fields.ForeignKeyField("models.Game", related_name="scores")
-    file_path = fields.CharField(max_length=255)
-    score = fields.IntField(default=0)
-
 
 class Socket(Model):
     id = fields.IntField(primary_key=True)
@@ -82,6 +73,7 @@ class Player(Model):
     bandwidth = fields.IntField()
     compute = fields.IntField()
     score = fields.IntField(default=0)
+    current_bandwidth = fields.FloatField(default=0.0)
 
 
 class Event(Model):

@@ -21,6 +21,8 @@ def server(game, debug):
     """Run the game server"""
     async def run():
         debug_flag = debug
+        if debug_flag:
+            print("Starting YAR server in debug mode...", flush=True)
         yar = YarServer()
         await yar.init_db()
         yar.find_players()
@@ -30,7 +32,7 @@ def server(game, debug):
                 print(f"P1 PID: {yar.player_pids[0]}")
                 print(f"P2 PID: {yar.player_pids[1]}")
         else:
-            print(f"Found {len(yar.player_pids)} opencode processes (need 2)")
+            print(f"Found {len(yar.player_pids)} opencode processes (need 2)", flush=True)
 
         if game:
             game_record = await Game.get_or_none(id=game)
@@ -45,10 +47,10 @@ def server(game, debug):
                 return
         else:
             if debug:
-                print("Setting up a new game...")
-            game_id, game_dir = await yar.setup_game()
+                print("Setting up a new game...", flush=True)
+            game_id, game_dir = await yar.setup_game(num_sockets=1)
             if debug:
-                print(f"Game {game_id:03d} created!")
+                print(f"Game {game_id:03d} created!", flush=True)
 
         await yar.run_socket_server(game_id, game_dir, debug_flag)
 
